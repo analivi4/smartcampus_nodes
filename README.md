@@ -31,7 +31,7 @@ Firmware para três nós IoT de monitoramento de salas, desenvolvidos com **Rasp
 | no2 | Relé | 2 |
 | no3 | I2C SDA | 4 |
 | no3 | I2C SCL | 5 |
-| no3 | XSHUT_A | 6 |
+| no3 | XSHUT_A | 8 |
 | no3 | XSHUT_B | 7 |
 
 ## LoRaWAN

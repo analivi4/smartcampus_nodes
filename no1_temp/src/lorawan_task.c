@@ -10,6 +10,7 @@
 #include "pico/lorawan.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "queue.h"
 #include "semphr.h"
 #include "pico/stdlib.h"
 #include <stdio.h>
@@ -50,20 +51,21 @@ static uint8_t           downlink_len       = 0;
 static volatile bool     downlink_available = false;
 static SemaphoreHandle_t xDownlinkMutex     = NULL;
 
+typedef struct { uint8_t data[64]; uint8_t size; } uplink_item_t;
+static QueueHandle_t xUplinkQueue = NULL;
 
 /* =========================================================================
  * API pública
  * ========================================================================= */
 void LoRaWan_Send(uint8_t *data, uint8_t size)
 {
-    if (!data || size == 0 || !is_joined) return;
-
-    LOG("[No1-LoRa] TX bytes (%d): ", size);
-    for (int i = 0; i < size; i++) LOG("%02X ", data[i]);
-    LOG(" | ASCII: \"%.*s\"\n", size, (char*)data);
-
-    int r = lorawan_send_unconfirmed(data, size, 1);
-    LOG("[No1-LoRa] %s (%d bytes)\n", r == 0 ? "Uplink OK" : "Erro uplink", size);
+    if (!data || size == 0 || !is_joined || !xUplinkQueue) return;
+    uplink_item_t item;
+    if (size > sizeof(item.data)) size = sizeof(item.data);
+    memcpy(item.data, data, size);
+    item.size = size;
+    if (xQueueSend(xUplinkQueue, &item, 0) != pdTRUE)
+        LOG("[No1-LoRa] AVISO: fila uplink cheia, pacote descartado.\n");
 }
 
 bool LoRaWan_GetDownlink(uint8_t *buf, uint8_t *len)
@@ -92,11 +94,16 @@ void vLoRaWanTask(void *pvParameters)
     xDownlinkMutex = xSemaphoreCreateMutex();
     if (!xDownlinkMutex) { LOG("[No1-LoRa] ERRO: mutex.\n"); vTaskDelete(NULL); return; }
 
+    xUplinkQueue = xQueueCreate(4, sizeof(uplink_item_t));
+    if (!xUplinkQueue) { LOG("[No1-LoRa] ERRO: fila uplink.\n"); vTaskDelete(NULL); return; }
+
     xRadioBusyMutex = xSemaphoreCreateMutex();
     if (!xRadioBusyMutex) { LOG("[No1-LoRa] ERRO: radio mutex.\n"); vTaskDelete(NULL); return; }
 
+    #ifdef DEBUG
     lorawan_debug(true);
-
+    #endif
+    
     if (lorawan_init_abp(&sx1276_settings, LORAMAC_REGION_AU915, &abp_settings) != 0) {
         LOG("[No1-LoRa] ERRO FATAL: init ABP.\n");
         vTaskDelete(NULL); return;
@@ -123,13 +130,20 @@ void vLoRaWanTask(void *pvParameters)
     /* Loop principal — process + polling downlink */
     uint8_t rx_buf[64];
     uint8_t rx_port = 0;
+    uplink_item_t item;
+
     while (1) {
         xSemaphoreTake(xRadioBusyMutex, portMAX_DELAY);
         lorawan_process();
+        if (xQueueReceive(xUplinkQueue, &item, 0) == pdTRUE) {
+            LOG("[No1-LoRa] TX bytes (%d) | ASCII: \"%.*s\"\n", item.size, item.size, (char *)item.data);
+            int r = lorawan_send_unconfirmed(item.data, item.size, 1);
+            LOG("[No1-LoRa] %s (%d bytes)\n", r == 0 ? "Uplink OK" : "Erro uplink", item.size);
+        }
         xSemaphoreGive(xRadioBusyMutex);
 
         int rx_len = lorawan_receive(rx_buf, sizeof(rx_buf), &rx_port);
-        if (rx_len > 0) {
+        if (rx_len > 0 && rx_port != 0) {
             LOG("[No1-LoRa] Downlink: porta=%d len=%d\n", rx_port, rx_len);
             if (xSemaphoreTake(xDownlinkMutex, pdMS_TO_TICKS(10)) == pdTRUE) {
                 memcpy(downlink_buf, rx_buf, rx_len);
@@ -137,6 +151,8 @@ void vLoRaWanTask(void *pvParameters)
                 downlink_available = true;
                 xSemaphoreGive(xDownlinkMutex);
             }
+        }else if (rx_len > 0 && rx_port == 0) {
+            LOG("[No1-LoRa] Downlink de Sistema (Comando MAC) recebido e ignorado pela app.\n");
         }
 
         vTaskDelay(pdMS_TO_TICKS(10));

@@ -51,11 +51,11 @@
 #define configTIMER_QUEUE_LENGTH                10
 #define configTIMER_TASK_STACK_DEPTH            1024
 
-/* SMP — RP2040 tem 2 núcleos */
-#define configNUMBER_OF_CORES                   2
-#define configTICK_CORE                         0
-#define configRUN_MULTIPLE_PRIORITIES           1
-#define configUSE_CORE_AFFINITY                 1
+/* Núcleo único — pico-lorawan/LoRaMAC não é thread-safe em SMP:
+ * CRITICAL_SECTION_BEGIN só mascara IRQs no core que executa; o core 1 pode
+ * acessar estado compartilhado do MAC enquanto o core 0 está em seção crítica.
+ * Com um único core, as seções críticas funcionam conforme o esperado. */
+#define configNUMBER_OF_CORES                   1
 
 #define configSUPPORT_PICO_SYNC_INTEROP         1
 #define configSUPPORT_PICO_TIME_INTEROP         1

@@ -22,7 +22,7 @@
 #define LED_PIN         25
 #define I2C_SDA          4
 #define I2C_SCL          5
-#define XSHUT_A          6
+#define XSHUT_A          8
 #define XSHUT_B          7
 #define PRESENCE_MM      500
 #define PASS_TIMEOUT_MS  3000
@@ -40,7 +40,7 @@ static void vOccupancyTask(void *pvParameters)
     xSemaphoreTake(xLoRaInitSemaphore, portMAX_DELAY);
     LOG("[No3] Iniciando contagem.\n");
 
-    typedef enum { IDLE, A_FIRST, B_FIRST } DetState;
+    typedef enum { IDLE, A_FIRST, B_FIRST, AB_BOTH } DetState;
 
     int      people_count   = 0;
     int      last_sent      = -1;
@@ -61,6 +61,7 @@ static void vOccupancyTask(void *pvParameters)
             case IDLE:
                 if      (ta && !tb) { state = A_FIRST; state_start_ms = now; }
                 else if (tb && !ta) { state = B_FIRST; state_start_ms = now; }
+                else if (ta && tb)  { state = AB_BOTH; state_start_ms = now; }
                 break;
             case A_FIRST:
                 if (tb) { people_count++; LOG("[No3] ENTRADA. Total: %d\n", people_count); state = IDLE; }
@@ -69,6 +70,27 @@ static void vOccupancyTask(void *pvParameters)
             case B_FIRST:
                 if (ta) { if (people_count > 0) people_count--; LOG("[No3] SAIDA. Total: %d\n", people_count); state = IDLE; }
                 else if ((now - state_start_ms) > PASS_TIMEOUT_MS) { state = IDLE; }
+                break;
+            case AB_BOTH:
+                /* Direção determinada por qual sensor é liberado primeiro */
+                if (!ta && tb) {
+                    /* A liberou primeiro → pessoa vinha do lado A → ENTRADA */
+                    people_count++;
+                    LOG("[No3] ENTRADA (simultaneo). Total: %d\n", people_count);
+                    state = IDLE;
+                } else if (ta && !tb) {
+                    /* B liberou primeiro → pessoa vinha do lado B → SAÍDA */
+                    if (people_count > 0) people_count--;
+                    LOG("[No3] SAIDA (simultaneo). Total: %d\n", people_count);
+                    state = IDLE;
+                } else if (!ta && !tb) {
+                    /* Ambos liberaram juntos — direção indeterminada, conta como entrada */
+                    people_count++;
+                    LOG("[No3] ENTRADA (simultaneo). Total: %d\n", people_count);
+                    state = IDLE;
+                } else if ((now - state_start_ms) > PASS_TIMEOUT_MS) {
+                    state = IDLE;
+                }
                 break;
         }
 

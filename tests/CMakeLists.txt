@@ -17,6 +17,9 @@ function(add_test_firmware name)
         hardware_spi hardware_gpio hardware_i2c
         hardware_sync sensors FreeRTOS-Kernel-Heap4 freertos_config
     )
+    # Injeta #define DEBUG 1 em todos os ficheiros compilados
+    add_compile_definitions(DEBUG=1)
+    
     pico_enable_stdio_usb(${name} 1)
     pico_enable_stdio_uart(${name} 1)
     pico_add_extra_outputs(${name})

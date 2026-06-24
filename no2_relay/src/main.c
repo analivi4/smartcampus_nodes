@@ -8,6 +8,11 @@
  * Pinos:
  *   RELAY = GPIO 2  |  LED = GPIO 25
  *   LoRa: NSS=17, SCK=18, MOSI=19, MISO=16, RST=15, DIO0=20, DIO1=21
+ *
+ * Estrutura espelhada do Nó 1 (validado e funcional):
+ *   - LoRaWan_Send chamado diretamente (sem fila de uplink)
+ *   - Sem terceira task de teste
+ *   - Mesmo padrão de mutex/semáforo
  */
 
 #include <stdio.h>
@@ -17,16 +22,17 @@
 #include "task.h"
 #include "semphr.h"
 #include "pico/lorawan.h"
-
 #include "lorawan_task.h"
 #include "spi_diagnostic.h"
 #include "relay.h"
 
-#define LED_PIN    25
-#define RELAY_PIN   2
+#define LED_PIN       25
+#define RELAY_PIN      2
+#define HEARTBEAT_MS   60000   /* 5 min */
 
 uint8_t ucHeap[configTOTAL_HEAP_SIZE] __attribute__((aligned(8)));
 SemaphoreHandle_t xLoRaInitSemaphore = NULL;
+SemaphoreHandle_t xRadioBusyMutex    = NULL;
 
 /* =========================================================================
  * Task: Relay
@@ -37,32 +43,36 @@ static void vRelayTask(void *pvParameters)
     xSemaphoreTake(xLoRaInitSemaphore, portMAX_DELAY);
     LOG("[No2-Relay] Iniciando.\n");
 
-    char payload[16];
+    bool     last_state   = relay_get(RELAY_PIN);
+    uint32_t last_send_ms = 0;
+    char     payload[16];
 
     while (1) {
-        /* --- Uplink: reporta estado atual --- */
-        bool state = relay_get(RELAY_PIN);
-        snprintf(payload, sizeof(payload), "R|%d\n", state ? 1 : 0);
-        LOG("[No2-Relay] Uplink: %s\n", payload);
-        LoRaWan_Send((uint8_t *)payload, strlen(payload));
+        bool     state = relay_get(RELAY_PIN);
+        uint32_t now   = to_ms_since_boot(get_absolute_time());
 
-        gpio_put(LED_PIN, 1); vTaskDelay(pdMS_TO_TICKS(100));
-        gpio_put(LED_PIN, 0);
+        /* Envia se estado mudou ou heartbeat venceu */
+        if (state != last_state || (now - last_send_ms) >= HEARTBEAT_MS) {
+            snprintf(payload, sizeof(payload), "R|%d\n", state ? 1 : 0);
+            LOG("[No2-Relay] Uplink (%s): %s",
+                state != last_state ? "mudanca" : "heartbeat", payload);
+            LoRaWan_Send((uint8_t *)payload, strlen(payload));
+            last_state   = state;
+            last_send_ms = now;
 
-        /* --- Verifica downlink --- */
+            gpio_put(LED_PIN, 1); vTaskDelay(pdMS_TO_TICKS(100));
+            gpio_put(LED_PIN, 0);
+        }
+
+        /* Verifica downlink */
         uint8_t dl_buf[64];
         uint8_t dl_len = 0;
         if (LoRaWan_GetDownlink(dl_buf, &dl_len) && dl_len >= 1) {
             LOG("[No2-Relay] Downlink: 0x%02X\n", dl_buf[0]);
             relay_set(RELAY_PIN, dl_buf[0] == 0x31);
-
-            /* Envia uplink imediato confirmando o acionamento */
-            state = relay_get(RELAY_PIN);
-            snprintf(payload, sizeof(payload), "R|%d\n", state ? 1 : 0);
-            LoRaWan_Send((uint8_t *)payload, strlen(payload));
         }
 
-        vTaskDelay(pdMS_TO_TICKS(30000));
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -73,7 +83,6 @@ int main(void)
 {
     stdio_init_all();
     sleep_ms(2000);
-
     lorawan_erase_nvm();
     sleep_ms(100);
 

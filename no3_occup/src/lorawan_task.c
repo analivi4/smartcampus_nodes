@@ -7,9 +7,11 @@
 #include "pico/lorawan.h"
 #include "FreeRTOS.h"
 #include "task.h"
+#include "queue.h"
 #include "semphr.h"
 #include "pico/stdlib.h"
 #include <stdio.h>
+#include <string.h>
 
 static const struct lorawan_sx1276_settings sx1276_settings = {
     .spi   = { .inst = spi0, .mosi = 19, .miso = 16, .sck = 18, .nss = 17 },
@@ -26,23 +28,35 @@ static const struct lorawan_abp_settings abp_settings = {
 extern SemaphoreHandle_t xLoRaInitSemaphore;
 static volatile bool is_joined = false;
 
+typedef struct { uint8_t data[64]; uint8_t size; } uplink_item_t;
+static QueueHandle_t xUplinkQueue = NULL;
+
 void LoRaWan_Send(uint8_t *data, uint8_t size)
 {
-    if (!data || size == 0 || !is_joined) return;
-    int r = lorawan_send_unconfirmed(data, size, 1);
-    LOG("[No3-LoRa] %s (%d bytes)\n", r == 0 ? "Uplink OK" : "Erro uplink", size);
+    if (!data || size == 0 || !is_joined || !xUplinkQueue) return;
+    uplink_item_t item;
+    if (size > sizeof(item.data)) size = sizeof(item.data);
+    memcpy(item.data, data, size);
+    item.size = size;
+    if (xQueueSend(xUplinkQueue, &item, 0) != pdTRUE)
+        LOG("[No3-LoRa] AVISO: fila uplink cheia, pacote descartado.\n");
 }
 
 void vLoRaWanTask(void *pvParameters)
 {
     LOG("[No3-LoRa] Inicializando (ABP, AU915)...\n");
 
-    lorawan_debug(true);
+    xUplinkQueue = xQueueCreate(4, sizeof(uplink_item_t));
+    if (!xUplinkQueue) { LOG("[No3-LoRa] ERRO: fila uplink.\n"); vTaskDelete(NULL); return; }
 
     if (lorawan_init_abp(&sx1276_settings, LORAMAC_REGION_AU915, &abp_settings) != 0) {
         LOG("[No3-LoRa] ERRO FATAL: init ABP.\n");
         vTaskDelete(NULL); return;
     }
+
+    #ifdef DEBUG
+    lorawan_debug(true);
+    #endif
 
     lorawan_join();
     for (uint32_t t = 0; !lorawan_is_joined() && t < 100; t++) {
@@ -60,8 +74,17 @@ void vLoRaWanTask(void *pvParameters)
     is_joined = true;
     if (xLoRaInitSemaphore) xSemaphoreGive(xLoRaInitSemaphore);
 
+    uplink_item_t item;
+
     while (1) {
         lorawan_process();
+
+        if (xQueueReceive(xUplinkQueue, &item, 0) == pdTRUE) {
+            LOG("[No3-LoRa] TX: \"%.*s\"\n", item.size, (char *)item.data);
+            int r = lorawan_send_unconfirmed(item.data, item.size, 1);
+            LOG("[No3-LoRa] %s (%d bytes)\n", r == 0 ? "Uplink OK" : "Erro uplink", item.size);
+        }
+
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }

@@ -14,6 +14,12 @@ add_definitions(-DREGION_AU915)
 add_definitions(-DACTIVE_REGION=LORAMAC_REGION_AU915)
 add_definitions(-DLORAMAC_CLASS_A)
 
+# Desabilita NVM/flash no LoRaMAC.
+# NvmDataMgmtStore usa flash_range_erase/program sem multicore_lockout,
+# o que causa Hard Fault no RP2040 SMP quando o core 1 executa da flash.
+# Os nós já chamam lorawan_erase_nvm() no boot, então persistência é irrelevante.
+add_definitions(-DCONTEXT_MANAGEMENT_ENABLED=0)
+
 # pico-lorawan — clone único no computador
 if(NOT DEFINED ENV{PICO_LORAWAN_PATH})
     message(FATAL_ERROR
@@ -50,6 +56,7 @@ target_link_libraries(sensors
     FreeRTOS-Kernel
     FreeRTOS-Kernel-Heap4
 )
+target_compile_definitions(sensors PRIVATE DEBUG)
 
 # Subprojetosr
 add_subdirectory(no1_temp)

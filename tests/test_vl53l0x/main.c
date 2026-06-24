@@ -5,7 +5,7 @@
 
 #define SDA 4
 #define SCL 5
-#define XSHUT_A 6
+#define XSHUT_A 8
 #define XSHUT_B 7
 
 int main(void)

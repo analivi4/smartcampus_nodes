@@ -349,20 +349,20 @@ bool vl53l0x_init_dual(vl53l0x_t *dev_a, vl53l0x_t *dev_b,
     gpio_put(xshut_a, 0); gpio_put(xshut_b, 0);
     sleep_ms(10);
 
-    /* Sensor A — fica em 0x29 */
-    gpio_put(xshut_a, 1); sleep_ms(10);
-    LOG("[VL53] Inicializando sensor A (0x29)...\n");
-    if (!vl53l0x_init(dev_a, i2c, VL53L0X_ADDR_A, timeout_ms)) return false;
-
-    /* Sensor B — sobe em 0x29, reprograma para 0x30 */
+    /* Sensor B sobe SOZINHO em 0x29 (A ainda está em XSHUT LOW) e é reprogramado
+     * para 0x30 antes de A subir — evita que o write 0x29 atinja os dois sensores */
     gpio_put(xshut_b, 1); sleep_ms(10);
     LOG("[VL53] Reprogramando sensor B para 0x30...\n");
     uint8_t cmd[2] = {VL53_I2C_SLAVE_DEVICE_ADDRESS, VL53L0X_ADDR_B};
     i2c_write_blocking(i2c, 0x29, cmd, 2, false);
     sleep_ms(5);
-
     LOG("[VL53] Inicializando sensor B (0x30)...\n");
     if (!vl53l0x_init(dev_b, i2c, VL53L0X_ADDR_B, timeout_ms)) return false;
+
+    /* Sensor A sobe SOZINHO em 0x29 (B já está em 0x30 — sem conflito) */
+    gpio_put(xshut_a, 1); sleep_ms(10);
+    LOG("[VL53] Inicializando sensor A (0x29)...\n");
+    if (!vl53l0x_init(dev_a, i2c, VL53L0X_ADDR_A, timeout_ms)) return false;
 
     return true;
 }
