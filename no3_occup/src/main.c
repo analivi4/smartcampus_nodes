@@ -22,8 +22,8 @@
 #define LED_PIN         25
 #define I2C_SDA          4
 #define I2C_SCL          5
-#define XSHUT_A          8
-#define XSHUT_B          7
+#define XSHUT_A          7
+#define XSHUT_B          8
 #define PRESENCE_MM      500
 #define PASS_TIMEOUT_MS  3000
 #define HEARTBEAT_MS     60000

@@ -26,13 +26,13 @@
 static void _wr(vl53l0x_t *d, uint8_t reg, uint8_t val)
 {
     uint8_t b[2] = {reg, val};
-    i2c_write_blocking(d->i2c, d->addr, b, 2, false);
+    i2c_write_timeout_us(d->i2c, d->addr, b, 2, false, (uint32_t)d->io_timeout * 1000);
 }
 
 static void _wr16(vl53l0x_t *d, uint8_t reg, uint16_t val)
 {
     uint8_t b[3] = {reg, (uint8_t)(val >> 8), (uint8_t)(val & 0xFF)};
-    i2c_write_blocking(d->i2c, d->addr, b, 3, false);
+    i2c_write_timeout_us(d->i2c, d->addr, b, 3, false, (uint32_t)d->io_timeout * 1000);
 }
 
 static void _wr32(vl53l0x_t *d, uint8_t reg, uint32_t val)
@@ -40,29 +40,29 @@ static void _wr32(vl53l0x_t *d, uint8_t reg, uint32_t val)
     uint8_t b[5] = {reg,
         (uint8_t)(val >> 24), (uint8_t)(val >> 16),
         (uint8_t)(val >> 8),  (uint8_t)(val & 0xFF)};
-    i2c_write_blocking(d->i2c, d->addr, b, 5, false);
+    i2c_write_timeout_us(d->i2c, d->addr, b, 5, false, (uint32_t)d->io_timeout * 1000);
 }
 
 static uint8_t _rd(vl53l0x_t *d, uint8_t reg)
 {
     uint8_t val = 0;
-    i2c_write_blocking(d->i2c, d->addr, &reg, 1, true);
-    i2c_read_blocking(d->i2c, d->addr, &val, 1, false);
+    i2c_write_timeout_us(d->i2c, d->addr, &reg, 1, true,  (uint32_t)d->io_timeout * 1000);
+    i2c_read_timeout_us (d->i2c, d->addr, &val, 1, false, (uint32_t)d->io_timeout * 1000);
     return val;
 }
 
 static uint16_t _rd16(vl53l0x_t *d, uint8_t reg)
 {
     uint8_t b[2] = {0};
-    i2c_write_blocking(d->i2c, d->addr, &reg, 1, true);
-    i2c_read_blocking(d->i2c, d->addr, b, 2, false);
+    i2c_write_timeout_us(d->i2c, d->addr, &reg, 1, true,  (uint32_t)d->io_timeout * 1000);
+    i2c_read_timeout_us (d->i2c, d->addr, b, 2, false, (uint32_t)d->io_timeout * 1000);
     return ((uint16_t)b[0] << 8) | b[1];
 }
 
 static void _rdm(vl53l0x_t *d, uint8_t reg, uint8_t *dst, uint8_t n)
 {
-    i2c_write_blocking(d->i2c, d->addr, &reg, 1, true);
-    i2c_read_blocking(d->i2c, d->addr, dst, n, false);
+    i2c_write_timeout_us(d->i2c, d->addr, &reg, 1, true,  (uint32_t)d->io_timeout * 1000);
+    i2c_read_timeout_us (d->i2c, d->addr, dst, n, false, (uint32_t)d->io_timeout * 1000);
 }
 
 static void _wrm(vl53l0x_t *d, uint8_t reg, const uint8_t *src, uint8_t n)
@@ -70,7 +70,7 @@ static void _wrm(vl53l0x_t *d, uint8_t reg, const uint8_t *src, uint8_t n)
     uint8_t buf[n + 1];
     buf[0] = reg;
     memcpy(buf + 1, src, n);
-    i2c_write_blocking(d->i2c, d->addr, buf, n + 1, false);
+    i2c_write_timeout_us(d->i2c, d->addr, buf, n + 1, false, (uint32_t)d->io_timeout * 1000);
 }
 
 /* --------------------------------------------------------------------------
@@ -350,17 +350,32 @@ bool vl53l0x_init_dual(vl53l0x_t *dev_a, vl53l0x_t *dev_b,
     sleep_ms(10);
 
     /* Sensor B sobe SOZINHO em 0x29 (A ainda está em XSHUT LOW) e é reprogramado
-     * para 0x30 antes de A subir — evita que o write 0x29 atinja os dois sensores */
-    gpio_put(xshut_b, 1); sleep_ms(10);
+     * para 0x30 antes de A subir — evita que o write 0x29 atinja os dois sensores.
+     * 50 ms garante que o sensor terminou o boot e liberou SDA antes da escrita. */
+    gpio_put(xshut_b, 1); sleep_ms(50);
+
+    /* Diagnóstico: confirma que sensor B respondeu em 0x29 antes de re-endereçar */
+    {
+        uint8_t reg = VL53_IDENTIFICATION_MODEL_ID;
+        uint8_t model_b = 0;
+        int wr = i2c_write_timeout_us(i2c, 0x29, &reg, 1, true,  (uint32_t)timeout_ms * 1000);
+        if (wr > 0)
+            i2c_read_timeout_us(i2c, 0x29, &model_b, 1, false, (uint32_t)timeout_ms * 1000);
+        LOG("[VL53] Sensor B em 0x29 antes do re-end: model_id=0x%02X (wr=%d, esperado 0xEE)\n",
+            model_b, wr);
+        if (model_b != 0xEE) return false;
+    }
+
     LOG("[VL53] Reprogramando sensor B para 0x30...\n");
     uint8_t cmd[2] = {VL53_I2C_SLAVE_DEVICE_ADDRESS, VL53L0X_ADDR_B};
-    i2c_write_blocking(i2c, 0x29, cmd, 2, false);
+    int addr_wr = i2c_write_timeout_us(i2c, 0x29, cmd, 2, false, (uint32_t)timeout_ms * 1000);
+    LOG("[VL53] Escrita de re-enderecamento: %s (ret=%d)\n", addr_wr > 0 ? "OK" : "FAIL", addr_wr);
     sleep_ms(5);
     LOG("[VL53] Inicializando sensor B (0x30)...\n");
     if (!vl53l0x_init(dev_b, i2c, VL53L0X_ADDR_B, timeout_ms)) return false;
 
     /* Sensor A sobe SOZINHO em 0x29 (B já está em 0x30 — sem conflito) */
-    gpio_put(xshut_a, 1); sleep_ms(10);
+    gpio_put(xshut_a, 1); sleep_ms(50);
     LOG("[VL53] Inicializando sensor A (0x29)...\n");
     if (!vl53l0x_init(dev_a, i2c, VL53L0X_ADDR_A, timeout_ms)) return false;
 
